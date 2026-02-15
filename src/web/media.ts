@@ -59,13 +59,19 @@ async function assertLocalMediaAllowed(
   } catch {
     resolved = path.resolve(mediaPath);
   }
-  for (const root of roots) {
-    let resolvedRoot: string;
-    try {
-      resolvedRoot = await fs.realpath(root);
-    } catch {
-      resolvedRoot = path.resolve(root);
-    }
+  const resolvedRoots = await Promise.all(
+    roots.map(async (root) => {
+      try {
+        return await fs.realpath(root);
+      } catch {
+        return path.resolve(root);
+      }
+    }),
+  );
+
+  for (let i = 0; i < roots.length; i++) {
+    const resolvedRoot = resolvedRoots[i];
+    const root = roots[i];
     if (resolvedRoot === path.parse(resolvedRoot).root) {
       throw new Error(
         `Invalid localRoots entry (refuses filesystem root): ${root}. Pass a narrower directory.`,

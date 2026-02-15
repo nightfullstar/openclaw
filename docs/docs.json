@@ -72,6 +72,14 @@
       "destination": "/providers/xiaomi"
     },
     {
+      "source": "/azure",
+      "destination": "/providers/azure"
+    },
+    {
+      "source": "/azure/",
+      "destination": "/providers/azure"
+    },
+    {
       "source": "/openai",
       "destination": "/providers/openai"
     },
@@ -1051,6 +1059,7 @@
                 "group": "Providers",
                 "pages": [
                   "providers/anthropic",
+                  "providers/azure",
                   "providers/openai",
                   "providers/openrouter",
                   "providers/litellm",

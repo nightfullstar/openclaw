@@ -378,6 +378,12 @@ export function normalizeProviders(params: {
       normalizedProvider = googleNormalized;
     }
 
+    // Azure AI Foundry uses OpenAI-compatible chat completions API.
+    if (normalizedKey === "azure" && !normalizedProvider.api) {
+      mutated = true;
+      normalizedProvider = { ...normalizedProvider, api: "openai-completions" };
+    }
+
     next[key] = normalizedProvider;
   }
 

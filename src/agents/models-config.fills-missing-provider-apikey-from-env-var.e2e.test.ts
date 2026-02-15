@@ -104,4 +104,44 @@ describe("models-config", () => {
       expect(parsed.providers["custom-proxy"]?.baseUrl).toBe("http://localhost:4000/v1");
     });
   });
+
+  it("normalizes azure provider to openai-completions API", async () => {
+    await withTempHome(async () => {
+      process.env.AZURE_API_KEY = "sk-azure-test";
+      try {
+        const cfg: OpenClawConfig = {
+          models: {
+            providers: {
+              azure: {
+                baseUrl: "https://my-resource.openai.azure.com/openai/v1",
+                models: [
+                  {
+                    id: "gpt-4o",
+                    name: "GPT-4o",
+                    reasoning: false,
+                    input: ["text"],
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 128000,
+                    maxTokens: 4096,
+                  },
+                ],
+              },
+            },
+          },
+        };
+
+        await ensureOpenClawModelsJson(cfg);
+
+        const modelPath = path.join(resolveOpenClawAgentDir(), "models.json");
+        const raw = await fs.readFile(modelPath, "utf8");
+        const parsed = JSON.parse(raw) as {
+          providers: Record<string, { api?: string; apiKey?: string }>;
+        };
+        expect(parsed.providers.azure?.api).toBe("openai-completions");
+        expect(parsed.providers.azure?.apiKey).toBe("AZURE_API_KEY");
+      } finally {
+        delete process.env.AZURE_API_KEY;
+      }
+    });
+  });
 });

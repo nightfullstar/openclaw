@@ -404,13 +404,17 @@ export async function collectIncludeFilePermFindings(params: {
     return findings;
   }
 
-  for (const p of includePaths) {
-    // eslint-disable-next-line no-await-in-loop
-    const perms = await inspectPathPermissions(p, {
-      env: params.env,
-      platform: params.platform,
-      exec: params.execIcacls,
-    });
+  const permResults = await Promise.all(
+    includePaths.map((p) =>
+      inspectPathPermissions(p, {
+        env: params.env,
+        platform: params.platform,
+        exec: params.execIcacls,
+      }).then((perms) => ({ path: p, perms })),
+    ),
+  );
+
+  for (const { path: p, perms } of permResults) {
     if (!perms.ok) {
       continue;
     }
@@ -517,72 +521,81 @@ export async function collectStateDeepFilesystemFindings(params: {
   const defaultAgentId = resolveDefaultAgentId(params.cfg);
   const ids = Array.from(new Set([defaultAgentId, ...agentIds])).map((id) => normalizeAgentId(id));
 
-  for (const agentId of ids) {
-    const agentDir = path.join(params.stateDir, "agents", agentId, "agent");
-    const authPath = path.join(agentDir, "auth-profiles.json");
-    // eslint-disable-next-line no-await-in-loop
-    const authPerms = await inspectPathPermissions(authPath, {
-      env: params.env,
-      platform: params.platform,
-      exec: params.execIcacls,
-    });
-    if (authPerms.ok) {
-      if (authPerms.worldWritable || authPerms.groupWritable) {
-        findings.push({
-          checkId: "fs.auth_profiles.perms_writable",
-          severity: "critical",
-          title: "auth-profiles.json is writable by others",
-          detail: `${formatPermissionDetail(authPath, authPerms)}; another user could inject credentials.`,
-          remediation: formatPermissionRemediation({
-            targetPath: authPath,
-            perms: authPerms,
-            isDir: false,
-            posixMode: 0o600,
-            env: params.env,
-          }),
-        });
-      } else if (authPerms.worldReadable || authPerms.groupReadable) {
-        findings.push({
-          checkId: "fs.auth_profiles.perms_readable",
-          severity: "warn",
-          title: "auth-profiles.json is readable by others",
-          detail: `${formatPermissionDetail(authPath, authPerms)}; auth-profiles.json contains API keys and OAuth tokens.`,
-          remediation: formatPermissionRemediation({
-            targetPath: authPath,
-            perms: authPerms,
-            isDir: false,
-            posixMode: 0o600,
-            env: params.env,
-          }),
-        });
-      }
-    }
+  const agentFindings = await Promise.all(
+    ids.map(async (agentId) => {
+      const agentFindings: SecurityAuditFinding[] = [];
+      const agentDir = path.join(params.stateDir, "agents", agentId, "agent");
+      const authPath = path.join(agentDir, "auth-profiles.json");
+      const storePath = path.join(params.stateDir, "agents", agentId, "sessions", "sessions.json");
 
-    const storePath = path.join(params.stateDir, "agents", agentId, "sessions", "sessions.json");
-    // eslint-disable-next-line no-await-in-loop
-    const storePerms = await inspectPathPermissions(storePath, {
-      env: params.env,
-      platform: params.platform,
-      exec: params.execIcacls,
-    });
-    if (storePerms.ok) {
-      if (storePerms.worldReadable || storePerms.groupReadable) {
-        findings.push({
-          checkId: "fs.sessions_store.perms_readable",
-          severity: "warn",
-          title: "sessions.json is readable by others",
-          detail: `${formatPermissionDetail(storePath, storePerms)}; routing and transcript metadata can be sensitive.`,
-          remediation: formatPermissionRemediation({
-            targetPath: storePath,
-            perms: storePerms,
-            isDir: false,
-            posixMode: 0o600,
-            env: params.env,
-          }),
-        });
+      const [authPerms, storePerms] = await Promise.all([
+        inspectPathPermissions(authPath, {
+          env: params.env,
+          platform: params.platform,
+          exec: params.execIcacls,
+        }),
+        inspectPathPermissions(storePath, {
+          env: params.env,
+          platform: params.platform,
+          exec: params.execIcacls,
+        }),
+      ]);
+
+      if (authPerms.ok) {
+        if (authPerms.worldWritable || authPerms.groupWritable) {
+          agentFindings.push({
+            checkId: "fs.auth_profiles.perms_writable",
+            severity: "critical",
+            title: "auth-profiles.json is writable by others",
+            detail: `${formatPermissionDetail(authPath, authPerms)}; another user could inject credentials.`,
+            remediation: formatPermissionRemediation({
+              targetPath: authPath,
+              perms: authPerms,
+              isDir: false,
+              posixMode: 0o600,
+              env: params.env,
+            }),
+          });
+        } else if (authPerms.worldReadable || authPerms.groupReadable) {
+          agentFindings.push({
+            checkId: "fs.auth_profiles.perms_readable",
+            severity: "warn",
+            title: "auth-profiles.json is readable by others",
+            detail: `${formatPermissionDetail(authPath, authPerms)}; auth-profiles.json contains API keys and OAuth tokens.`,
+            remediation: formatPermissionRemediation({
+              targetPath: authPath,
+              perms: authPerms,
+              isDir: false,
+              posixMode: 0o600,
+              env: params.env,
+            }),
+          });
+        }
       }
-    }
-  }
+
+      if (storePerms.ok) {
+        if (storePerms.worldReadable || storePerms.groupReadable) {
+          agentFindings.push({
+            checkId: "fs.sessions_store.perms_readable",
+            severity: "warn",
+            title: "sessions.json is readable by others",
+            detail: `${formatPermissionDetail(storePath, storePerms)}; routing and transcript metadata can be sensitive.`,
+            remediation: formatPermissionRemediation({
+              targetPath: storePath,
+              perms: storePerms,
+              isDir: false,
+              posixMode: 0o600,
+              env: params.env,
+            }),
+          });
+        }
+      }
+
+      return agentFindings;
+    }),
+  );
+
+  findings.push(...agentFindings.flat());
 
   const logFile =
     typeof params.cfg.logging?.file === "string" ? params.cfg.logging.file.trim() : "";
@@ -651,86 +664,93 @@ export async function collectPluginsCodeSafetyFindings(params: {
   });
   const pluginDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 
-  for (const pluginName of pluginDirs) {
-    const pluginPath = path.join(extensionsDir, pluginName);
-    const extensionEntries = await readPluginManifestExtensions(pluginPath).catch(() => []);
-    const forcedScanEntries: string[] = [];
-    const escapedEntries: string[] = [];
+  const pluginFindings = await Promise.all(
+    pluginDirs.map(async (pluginName) => {
+      const pluginFindings: SecurityAuditFinding[] = [];
+      const pluginPath = path.join(extensionsDir, pluginName);
+      const extensionEntries = await readPluginManifestExtensions(pluginPath).catch(() => []);
+      const forcedScanEntries: string[] = [];
+      const escapedEntries: string[] = [];
 
-    for (const entry of extensionEntries) {
-      const resolvedEntry = path.resolve(pluginPath, entry);
-      if (!isPathInside(pluginPath, resolvedEntry)) {
-        escapedEntries.push(entry);
-        continue;
+      for (const entry of extensionEntries) {
+        const resolvedEntry = path.resolve(pluginPath, entry);
+        if (!isPathInside(pluginPath, resolvedEntry)) {
+          escapedEntries.push(entry);
+          continue;
+        }
+        if (extensionUsesSkippedScannerPath(entry)) {
+          pluginFindings.push({
+            checkId: "plugins.code_safety.entry_path",
+            severity: "warn",
+            title: `Plugin "${pluginName}" entry path is hidden or node_modules`,
+            detail: `Extension entry "${entry}" points to a hidden or node_modules path. Deep code scan will cover this entry explicitly, but review this path choice carefully.`,
+            remediation:
+              "Prefer extension entrypoints under normal source paths like dist/ or src/.",
+          });
+        }
+        forcedScanEntries.push(resolvedEntry);
       }
-      if (extensionUsesSkippedScannerPath(entry)) {
-        findings.push({
-          checkId: "plugins.code_safety.entry_path",
-          severity: "warn",
-          title: `Plugin "${pluginName}" entry path is hidden or node_modules`,
-          detail: `Extension entry "${entry}" points to a hidden or node_modules path. Deep code scan will cover this entry explicitly, but review this path choice carefully.`,
-          remediation: "Prefer extension entrypoints under normal source paths like dist/ or src/.",
-        });
-      }
-      forcedScanEntries.push(resolvedEntry);
-    }
 
-    if (escapedEntries.length > 0) {
-      findings.push({
-        checkId: "plugins.code_safety.entry_escape",
-        severity: "critical",
-        title: `Plugin "${pluginName}" has extension entry path traversal`,
-        detail: `Found extension entries that escape the plugin directory:\n${escapedEntries.map((entry) => `  - ${entry}`).join("\n")}`,
-        remediation:
-          "Update the plugin manifest so all openclaw.extensions entries stay inside the plugin directory.",
-      });
-    }
-
-    const summary = await skillScanner
-      .scanDirectoryWithSummary(pluginPath, {
-        includeFiles: forcedScanEntries,
-      })
-      .catch((err) => {
-        findings.push({
-          checkId: "plugins.code_safety.scan_failed",
-          severity: "warn",
-          title: `Plugin "${pluginName}" code scan failed`,
-          detail: `Static code scan could not complete: ${String(err)}`,
+      if (escapedEntries.length > 0) {
+        pluginFindings.push({
+          checkId: "plugins.code_safety.entry_escape",
+          severity: "critical",
+          title: `Plugin "${pluginName}" has extension entry path traversal`,
+          detail: `Found extension entries that escape the plugin directory:\n${escapedEntries.map((entry) => `  - ${entry}`).join("\n")}`,
           remediation:
-            "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
+            "Update the plugin manifest so all openclaw.extensions entries stay inside the plugin directory.",
         });
-        return null;
-      });
-    if (!summary) {
-      continue;
-    }
+      }
 
-    if (summary.critical > 0) {
-      const criticalFindings = summary.findings.filter((f) => f.severity === "critical");
-      const details = formatCodeSafetyDetails(criticalFindings, pluginPath);
+      const summary = await skillScanner
+        .scanDirectoryWithSummary(pluginPath, {
+          includeFiles: forcedScanEntries,
+        })
+        .catch((err) => {
+          pluginFindings.push({
+            checkId: "plugins.code_safety.scan_failed",
+            severity: "warn",
+            title: `Plugin "${pluginName}" code scan failed`,
+            detail: `Static code scan could not complete: ${String(err)}`,
+            remediation:
+              "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
+          });
+          return null;
+        });
+      if (!summary) {
+        return pluginFindings;
+      }
 
-      findings.push({
-        checkId: "plugins.code_safety",
-        severity: "critical",
-        title: `Plugin "${pluginName}" contains dangerous code patterns`,
-        detail: `Found ${summary.critical} critical issue(s) in ${summary.scannedFiles} scanned file(s):\n${details}`,
-        remediation:
-          "Review the plugin source code carefully before use. If untrusted, remove the plugin from your OpenClaw extensions state directory.",
-      });
-    } else if (summary.warn > 0) {
-      const warnFindings = summary.findings.filter((f) => f.severity === "warn");
-      const details = formatCodeSafetyDetails(warnFindings, pluginPath);
+      if (summary.critical > 0) {
+        const criticalFindings = summary.findings.filter((f) => f.severity === "critical");
+        const details = formatCodeSafetyDetails(criticalFindings, pluginPath);
 
-      findings.push({
-        checkId: "plugins.code_safety",
-        severity: "warn",
-        title: `Plugin "${pluginName}" contains suspicious code patterns`,
-        detail: `Found ${summary.warn} warning(s) in ${summary.scannedFiles} scanned file(s):\n${details}`,
-        remediation: `Review the flagged code to ensure it is intentional and safe.`,
-      });
-    }
-  }
+        pluginFindings.push({
+          checkId: "plugins.code_safety",
+          severity: "critical",
+          title: `Plugin "${pluginName}" contains dangerous code patterns`,
+          detail: `Found ${summary.critical} critical issue(s) in ${summary.scannedFiles} scanned file(s):\n${details}`,
+          remediation:
+            "Review the plugin source code carefully before use. If untrusted, remove the plugin from your OpenClaw extensions state directory.",
+        });
+      } else if (summary.warn > 0) {
+        const warnFindings = summary.findings.filter((f) => f.severity === "warn");
+        const details = formatCodeSafetyDetails(warnFindings, pluginPath);
 
+        pluginFindings.push({
+          checkId: "plugins.code_safety",
+          severity: "warn",
+          title: `Plugin "${pluginName}" contains suspicious code patterns`,
+          detail: `Found ${summary.warn} warning(s) in ${summary.scannedFiles} scanned file(s):\n${details}`,
+          remediation: `Review the flagged code to ensure it is intentional and safe.`,
+        });
+      }
+
+      return pluginFindings;
+    }),
+  );
+
+  findings.push(...pluginFindings.flat());
   return findings;
 }
 
@@ -738,9 +758,9 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
   cfg: OpenClawConfig;
   stateDir: string;
 }): Promise<SecurityAuditFinding[]> {
-  const findings: SecurityAuditFinding[] = [];
   const pluginExtensionsDir = path.join(params.stateDir, "extensions");
   const scannedSkillDirs = new Set<string>();
+  const skillsToScan: Array<{ skillDir: string; skillName: string }> = [];
   const workspaceDirs = listWorkspaceDirs(params.cfg);
 
   for (const workspaceDir of workspaceDirs) {
@@ -752,15 +772,19 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
 
       const skillDir = path.resolve(entry.skill.baseDir);
       if (isPathInside(pluginExtensionsDir, skillDir)) {
-        // Plugin code is already covered by plugins.code_safety checks.
         continue;
       }
       if (scannedSkillDirs.has(skillDir)) {
         continue;
       }
       scannedSkillDirs.add(skillDir);
+      skillsToScan.push({ skillDir, skillName: entry.skill.name });
+    }
+  }
 
-      const skillName = entry.skill.name;
+  const skillFindings = await Promise.all(
+    skillsToScan.map(async ({ skillDir, skillName }) => {
+      const findings: SecurityAuditFinding[] = [];
       const summary = await skillScanner.scanDirectoryWithSummary(skillDir).catch((err) => {
         findings.push({
           checkId: "skills.code_safety.scan_failed",
@@ -773,7 +797,7 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
         return null;
       });
       if (!summary) {
-        continue;
+        return findings;
       }
 
       if (summary.critical > 0) {
@@ -799,8 +823,9 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
           remediation: "Review flagged lines to ensure the behavior is intentional and safe.",
         });
       }
-    }
-  }
+      return findings;
+    }),
+  );
 
-  return findings;
+  return skillFindings.flat();
 }

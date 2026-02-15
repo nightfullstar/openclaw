@@ -36,6 +36,7 @@ See [Venice AI](/providers/venice).
 ## Provider docs
 
 - [OpenAI (API + Codex)](/providers/openai)
+- [Azure AI Foundry](/providers/azure) — OpenAI, Claude, Mistral, Llama, Grok, and more via Azure
 - [Anthropic (API + Claude Code CLI)](/providers/anthropic)
 - [Qwen (OAuth)](/providers/qwen)
 - [OpenRouter](/providers/openrouter)
